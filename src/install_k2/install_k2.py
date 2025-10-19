@@ -117,6 +117,12 @@ def fetch_wheel_links(
                         if py_tag in wheel_link and abi_tag in wheel_link:
                             matching_wheels.append(wheel_link)
 
+                    # Filter out CUDA 12.9 wheels
+                    original_count = len(matching_wheels)
+                    matching_wheels = [w for w in matching_wheels if parse_cuda_from_filename(w) != '12.9']
+                    if original_count > len(matching_wheels):
+                        print(f'[INFO] Filtered out {original_count - len(matching_wheels)} CUDA 12.9 wheel(s)')
+
                     if cuda_version and matching_wheels:
                         # First try to find wheels with the specified CUDA version
                         cuda_specific_wheels = []
@@ -262,8 +268,14 @@ def best_match_cuda(candidates: List[str], installed_cuda: Optional[str]) -> Lis
     """
     Keep only CUDA wheels; if installed_cuda present, prefer same major.minor,
     else fallback to highest CUDA version available.
+    Excludes CUDA 12.9 versions.
     """
     cuda_wheels = [w for w in candidates if 'cuda' in w.lower()]
+    if not cuda_wheels:
+        return []
+
+    # Filter out CUDA 12.9 wheels
+    cuda_wheels = [w for w in cuda_wheels if parse_cuda_from_filename(w) != '12.9']
     if not cuda_wheels:
         return []
 
@@ -389,10 +401,19 @@ def run_pip_install(wheel_url: str, dry_run: bool):
         sys.exit(e.returncode)
 
 
-def install_k2_main(dry_run: bool = False):
-    """Main function to install k2 without argparse, suitable for programmatic use."""
-    system = platform.system().lower()
-    print(f'[INFO] Detected OS: {system}')
+def install_k2_main(dry_run: bool = False, system: Optional[str] = None):
+    """Main function to install k2 without argparse, suitable for programmatic use.
+
+    Args:
+        dry_run: If True, only show what would be installed without making changes.
+        system: Override OS detection. Valid values: 'linux', 'darwin', 'windows', or None for auto-detect.
+    """
+    if system is None:
+        system = platform.system().lower()
+        print(f'[INFO] Detected OS: {system}')
+    else:
+        system = system.lower()
+        print(f'[INFO] Using specified OS: {system}')
     print(f'[INFO] Python: {platform.python_version()} | Impl: {platform.python_implementation()}')
 
     # Check if torch is already installed
@@ -512,15 +533,21 @@ def install_k2_main(dry_run: bool = False):
 def install_k2():
     """CLI entry point with argparse support."""
     parser = argparse.ArgumentParser(description='Auto-install the latest k2 wheel for your environment.')
+    parser.add_argument(
+        '--system',
+        default=None,
+        choices=['linux', 'darwin', 'windows'],
+        help='Override OS detection. Valid values: linux, darwin (macOS), windows. Default: auto-detect',
+    )
     parser.add_argument('--dry-run', action='store_true', help='Show what would be installed without making changes.')
     args = parser.parse_args()
     try:
-        install_k2_main(dry_run=args.dry_run)
+        install_k2_main(dry_run=args.dry_run, system=args.system)
     except ConnectionResetError:
         # export HF_ENDPOINT=https://hf-mirror.com
         print('Try `export HF_ENDPOINT=https://hf-mirror.com` to set a mirror for HuggingFace.')
         os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
-        install_k2_main(dry_run=args.dry_run)
+        install_k2_main(dry_run=args.dry_run, system=args.system)
 
 
 if __name__ == '__main__':
