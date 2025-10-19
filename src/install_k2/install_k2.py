@@ -406,7 +406,7 @@ def install_k2_main(dry_run: bool = False):
         print('[INFO] Target: Linux (CUDA wheels)')
         cuda_version = detect_cuda_version_linux()
         if not cuda_version:
-            print('[WARN] No CUDA detected on Linux.')
+            # print('[WARN] No CUDA detected on Linux.')
             # print("[HINT] Install CUDA or build from source if CPU-only is required.")
             # print("")
             # print("To build k2 from source, you can run the following commands:")
@@ -419,7 +419,8 @@ def install_k2_main(dry_run: bool = False):
             # if response in ["y", "yes"]:
             #     print("[INFO] Please run the commands above manually to install k2 from source.")
             # sys.exit(2)
-        print(f'[INFO] Detected CUDA version: {cuda_version}')
+            pass
+        print(f'[INFO] Detected Torch CUDA version: {cuda_version}')
 
         wheel = None
         for _torch_version in [torch_version, None] if torch_version else [None]:
@@ -513,7 +514,13 @@ def install_k2():
     parser = argparse.ArgumentParser(description='Auto-install the latest k2 wheel for your environment.')
     parser.add_argument('--dry-run', action='store_true', help='Show what would be installed without making changes.')
     args = parser.parse_args()
-    install_k2_main(dry_run=args.dry_run)
+    try:
+        install_k2_main(dry_run=args.dry_run)
+    except ConnectionResetError:
+        # export HF_ENDPOINT=https://hf-mirror.com
+        print('Try `export HF_ENDPOINT=https://hf-mirror.com` to set a mirror for HuggingFace.')
+        os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+        install_k2_main(dry_run=args.dry_run)
 
 
 if __name__ == '__main__':
