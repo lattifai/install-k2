@@ -3,7 +3,7 @@ from setuptools import setup
 
 setup(
     name="install_k2",
-    version="0.0.6",
+    version="0.1.0",
     package_dir={"": "src"},
     description="Install k2 package",
     author="The Lattifai Development Team",

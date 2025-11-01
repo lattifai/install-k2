@@ -421,12 +421,13 @@ def run_pip_install(wheel_url: str, dry_run: bool):
         sys.exit(e.returncode)
 
 
-def install_k2_main(dry_run: bool = False, system: Optional[str] = None):
+def install_k2_main(dry_run: bool = False, system: Optional[str] = None, torch_version: Optional[str] = None):
     """Main function to install k2 without argparse, suitable for programmatic use.
 
     Args:
         dry_run: If True, only show what would be installed without making changes.
         system: Override OS detection. Valid values: 'linux', 'darwin', 'windows', or None for auto-detect.
+        torch_version: Specify torch version (e.g., '2.8.0'). If None, will auto-detect or use latest.
     """
     if system is None:
         system = platform.system().lower()
@@ -436,12 +437,15 @@ def install_k2_main(dry_run: bool = False, system: Optional[str] = None):
         print(f'[INFO] Using specified OS: {system}')
     print(f'[INFO] Python: {platform.python_version()} | Impl: {platform.python_implementation()}')
 
-    # Check if torch is already installed
-    torch_version = detect_torch_version()
+    # Check torch version: use specified > detected > None
     if torch_version:
-        print(f'[INFO] Detected PyTorch version: {torch_version}')
+        print(f'[INFO] Using specified PyTorch version: {torch_version}')
     else:
-        print('[INFO] PyTorch not detected, will search all available versions')
+        torch_version = detect_torch_version()
+        if torch_version:
+            print(f'[INFO] Detected PyTorch version: {torch_version}')
+        else:
+            print('[INFO] PyTorch not detected, will search all available versions')
 
     if system == 'linux':
         print('[INFO] Target: Linux (CUDA wheels)')
@@ -499,9 +503,25 @@ def install_k2_main(dry_run: bool = False, system: Optional[str] = None):
                 if wheel:
                     break
 
-        # Strategy 3: Try without specific torch version
-        if not wheel:
+        # Strategy 3: Try latest version if no torch detected
+        if not wheel and not torch_version:
             print('[INFO] Trying without specific torch version...')
+            available_versions = get_available_torch_versions(CUDA_LINUX_URL)
+
+            for version in available_versions:
+                for _cuda_version in [cuda_version, None] if cuda_version else [None]:
+                    links = fetch_wheel_links(CUDA_LINUX_URL, version, cuda_version=_cuda_version)
+                    if links:
+                        wheel = links[0]
+                        print(f'[INFO] Found compatible wheel for torch {version}')
+                        break
+
+                if wheel:
+                    break
+
+        # Strategy 4: Last resort - try all wheels without version filter
+        if not wheel:
+            print('[INFO] Trying all available wheels as last resort...')
             links = fetch_wheel_links(CUDA_LINUX_URL)
             wheel = choose_best_wheel(links, require_cuda=cuda_version is not None)
 
@@ -554,9 +574,21 @@ def install_k2_main(dry_run: bool = False, system: Optional[str] = None):
                     print(f'[INFO] Found compatible wheel for torch {version} (fallback from {torch_version})')
                     break
 
-        # Strategy 3: Try without specific torch version
-        if not wheel:
+        # Strategy 3: Try latest version if no torch detected
+        if not wheel and not torch_version:
             print('[INFO] Trying without specific torch version...')
+            available_versions = get_available_torch_versions(MAC_CPU_URL)
+
+            for version in available_versions:
+                links = fetch_wheel_links(MAC_CPU_URL, version)
+                if links:
+                    wheel = links[0]
+                    print(f'[INFO] Found compatible wheel for torch {version}')
+                    break
+
+        # Strategy 4: Last resort - try all wheels without version filter
+        if not wheel:
+            print('[INFO] Trying all available wheels as last resort...')
             links = fetch_wheel_links(MAC_CPU_URL)
             wheel = choose_best_wheel(links, require_cuda=False)
             if links and not wheel:
@@ -606,9 +638,21 @@ def install_k2_main(dry_run: bool = False, system: Optional[str] = None):
                     print(f'[INFO] Found compatible wheel for torch {version} (fallback from {torch_version})')
                     break
 
-        # Strategy 3: Try without specific torch version
-        if not wheel:
+        # Strategy 3: Try latest version if no torch detected
+        if not wheel and not torch_version:
             print('[INFO] Trying without specific torch version...')
+            available_versions = get_available_torch_versions(WIN_CPU_URL)
+
+            for version in available_versions:
+                links = fetch_wheel_links(WIN_CPU_URL, version)
+                if links:
+                    wheel = links[0]
+                    print(f'[INFO] Found compatible wheel for torch {version}')
+                    break
+
+        # Strategy 4: Last resort - try all wheels without version filter
+        if not wheel:
+            print('[INFO] Trying all available wheels as last resort...')
             links = fetch_wheel_links(WIN_CPU_URL)
             wheel = choose_best_wheel(links, require_cuda=False)
             if links and not wheel:
@@ -644,14 +688,19 @@ def install_k2():
         help='Override OS detection. Valid values: linux, darwin (macOS), windows. Default: auto-detect',
     )
     parser.add_argument('--dry-run', action='store_true', help='Show what would be installed without making changes.')
+    parser.add_argument(
+        '--torch-version',
+        default=None,
+        help='Specify torch version (e.g., 2.8.0). If not specified, will auto-detect or use latest available.',
+    )
     args = parser.parse_args()
     try:
-        install_k2_main(dry_run=args.dry_run, system=args.system)
+        install_k2_main(dry_run=args.dry_run, system=args.system, torch_version=args.torch_version)
     except ConnectionResetError:
         # export HF_ENDPOINT=https://hf-mirror.com
         print('Try `export HF_ENDPOINT=https://hf-mirror.com` to set a mirror for HuggingFace.')
         os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
-        install_k2_main(dry_run=args.dry_run, system=args.system)
+        install_k2_main(dry_run=args.dry_run, system=args.system, torch_version=args.torch_version)
 
 
 if __name__ == '__main__':
