@@ -49,8 +49,27 @@ class WheelLinkParser(HTMLParser):
                     self.links.append(href)
 
 
+def get_available_torch_versions(page_url: str) -> List[str]:
+    """Get all available torch versions from the k2 index page."""
+    with urllib.request.urlopen(page_url) as resp:
+        html = resp.read().decode('utf-8', errors='ignore')
+
+    version_parser = WheelLinkParser(parse_mode='versions')
+    version_parser.feed(html)
+
+    def parse_version_from_link(link: str) -> Tuple[int, int, int]:
+        match = re.match(r'^(\d+)\.(\d+)\.(\d+)\.html$', link)
+        if match:
+            return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        return (0, 0, 0)
+
+    # Sort by version descending (newest first)
+    sorted_versions = sorted(version_parser.links, key=parse_version_from_link, reverse=True)
+    return [v.replace('.html', '') for v in sorted_versions]
+
+
 def fetch_wheel_links(
-    page_url: str, target_torch_version: Optional[str] = None, cuda_version: Optional[str] = None
+    page_url: str, target_torch_version: Optional[str] = None, cuda_version: Optional[str] = None, strict: bool = True
 ) -> List[str]:
     """
     Fetch wheel links from k2 pages. The structure is:
@@ -61,6 +80,7 @@ def fetch_wheel_links(
         page_url: The base URL to fetch wheels from
         target_torch_version: If specified, only fetch wheels for this torch version (e.g., "2.8.0")
         cuda_version: If specified, prefer wheels with this CUDA version (e.g., "12.1")
+        strict: If False, will try older torch versions if target version not found
     """
     with urllib.request.urlopen(page_url) as resp:
         html = resp.read().decode('utf-8', errors='ignore')
@@ -444,37 +464,63 @@ def install_k2_main(dry_run: bool = False, system: Optional[str] = None):
         print(f'[INFO] Detected Torch CUDA version: {cuda_version}')
 
         wheel = None
-        for _torch_version in [torch_version, None] if torch_version else [None]:
+        py_tag, _ = py_tags()
+
+        # Strategy 1: Try with detected torch version
+        if torch_version:
             for _cuda_version in [cuda_version, None] if cuda_version else [None]:
-                links = fetch_wheel_links(CUDA_LINUX_URL, _torch_version, cuda_version=_cuda_version)
-                if _torch_version and links:
-                    # If we have torch version and found matching wheel, use it directly
+                links = fetch_wheel_links(CUDA_LINUX_URL, torch_version, cuda_version=_cuda_version)
+                if links:
                     wheel = links[0]
-                else:
-                    # Fallback to traditional selection
-                    if not links:
-                        links = fetch_wheel_links(CUDA_LINUX_URL)
-                    wheel = choose_best_wheel(links, require_cuda=_cuda_version is not None)
+                    break
+                elif _cuda_version:
+                    print(f'[WARN] No wheel found for torch {torch_version} with CUDA {_cuda_version}')
 
-                    if not _torch_version and links and not wheel:
-                        wheel = links[0]  # Pick first available as last resort
+            if not wheel:
+                print(f'[WARN] No wheel found for torch {torch_version}, will try fallback strategies')
 
-                if not wheel:
-                    if _cuda_version:
-                        print(
-                            f'[WARN] No suitable wheel found for CUDA {_cuda_version}, " + \
-                            "trying without CUDA preference...'
-                        )
-                else:
-                    break  # Found a wheel, exit loop
+        # Strategy 2: Try older torch versions if current version failed
+        if not wheel and torch_version:
+            print('[INFO] Trying older torch versions...')
+            available_versions = get_available_torch_versions(CUDA_LINUX_URL)
 
-            if not wheel and _torch_version:
-                print(
-                    f'[WARN] Tried torch version {_torch_version}, but not found wheel, trying without torch version...'
-                )
+            for version in available_versions:
+                # Skip the version we already tried
+                if version == torch_version:
+                    continue
 
-            if wheel:
-                break
+                for _cuda_version in [cuda_version, None] if cuda_version else [None]:
+                    links = fetch_wheel_links(CUDA_LINUX_URL, version, cuda_version=_cuda_version)
+                    if links:
+                        wheel = links[0]
+                        print(f'[INFO] Found compatible wheel for torch {version} (fallback from {torch_version})')
+                        break
+
+                if wheel:
+                    break
+
+        # Strategy 3: Try without specific torch version
+        if not wheel:
+            print('[INFO] Trying without specific torch version...')
+            links = fetch_wheel_links(CUDA_LINUX_URL)
+            wheel = choose_best_wheel(links, require_cuda=cuda_version is not None)
+
+            if not wheel and links:
+                wheel = links[0]  # Pick first available as last resort
+
+        if not wheel:
+            print('[ERROR] Could not find a suitable Linux CUDA wheel for your Python/platform.')
+            print(f'[INFO] Python version: {platform.python_version()} ({py_tag})')
+            if torch_version:
+                print(f'[INFO] Requested torch version: {torch_version}')
+            if cuda_version:
+                print(f'[INFO] CUDA version: {cuda_version}')
+            print('')
+            print('[HINT] k2 may not have wheels for your Python version yet.')
+            print('[HINT] Available options:')
+            print('  1. Try upgrading to Python 3.10, 3.11, or 3.12')
+            print('  2. Build k2 from source: https://k2-fsa.github.io/k2/installation/from_source.html')
+            sys.exit(1)
 
         print(f'[INFO] Selected wheel:\n  {wheel}')
         run_pip_install(wheel, dry_run)
@@ -482,21 +528,50 @@ def install_k2_main(dry_run: bool = False, system: Optional[str] = None):
 
     elif system == 'darwin':
         print('[INFO] Target: macOS (CPU wheels)')
-        for _torch_version in [torch_version, None] if torch_version else [None]:
-            links = fetch_wheel_links(MAC_CPU_URL, _torch_version)
-            if _torch_version and links:
-                # If we have torch version and found matching wheel, use it directly
+        py_tag, _ = py_tags()
+        wheel = None
+
+        # Strategy 1: Try with detected torch version
+        if torch_version:
+            links = fetch_wheel_links(MAC_CPU_URL, torch_version)
+            if links:
                 wheel = links[0]
             else:
-                # Fallback to traditional selection
-                if not links:
-                    links = fetch_wheel_links(MAC_CPU_URL)
-                wheel = choose_best_wheel(links, require_cuda=False)
-                if links and not wheel:
-                    wheel = links[0]  # Pick first available as last resort
+                print(f'[WARN] No wheel found for torch {torch_version}, will try fallback strategies')
+
+        # Strategy 2: Try older torch versions if current version failed
+        if not wheel and torch_version:
+            print('[INFO] Trying older torch versions...')
+            available_versions = get_available_torch_versions(MAC_CPU_URL)
+
+            for version in available_versions:
+                if version == torch_version:
+                    continue
+
+                links = fetch_wheel_links(MAC_CPU_URL, version)
+                if links:
+                    wheel = links[0]
+                    print(f'[INFO] Found compatible wheel for torch {version} (fallback from {torch_version})')
+                    break
+
+        # Strategy 3: Try without specific torch version
+        if not wheel:
+            print('[INFO] Trying without specific torch version...')
+            links = fetch_wheel_links(MAC_CPU_URL)
+            wheel = choose_best_wheel(links, require_cuda=False)
+            if links and not wheel:
+                wheel = links[0]  # Pick first available as last resort
 
         if not wheel:
             print('[ERROR] Could not find a suitable macOS CPU wheel for your Python/platform.')
+            print(f'[INFO] Python version: {platform.python_version()} ({py_tag})')
+            if torch_version:
+                print(f'[INFO] Requested torch version: {torch_version}')
+            print('')
+            print('[HINT] k2 may not have wheels for your Python version yet.')
+            print('[HINT] Available options:')
+            print('  1. Try upgrading to Python 3.10, 3.11, or 3.12')
+            print('  2. Build k2 from source: https://k2-fsa.github.io/k2/installation/from_source.html')
             sys.exit(1)
 
         print(f'[INFO] Selected wheel:\n  {wheel}')
@@ -505,21 +580,50 @@ def install_k2_main(dry_run: bool = False, system: Optional[str] = None):
 
     elif system == 'windows':
         print('[INFO] Target: Windows (CPU wheels)')
-        for _torch_version in [torch_version, None] if torch_version else [None]:
+        py_tag, _ = py_tags()
+        wheel = None
+
+        # Strategy 1: Try with detected torch version
+        if torch_version:
             links = fetch_wheel_links(WIN_CPU_URL, torch_version)
-            if torch_version and links:
-                # If we have torch version and found matching wheel, use it directly
+            if links:
                 wheel = links[0]
             else:
-                # Fallback to traditional selection
-                if not links:
-                    links = fetch_wheel_links(WIN_CPU_URL)
-                wheel = choose_best_wheel(links, require_cuda=False)
-                if links and not wheel:
-                    wheel = links[0]  # Pick first available as last resort
+                print(f'[WARN] No wheel found for torch {torch_version}, will try fallback strategies')
+
+        # Strategy 2: Try older torch versions if current version failed
+        if not wheel and torch_version:
+            print('[INFO] Trying older torch versions...')
+            available_versions = get_available_torch_versions(WIN_CPU_URL)
+
+            for version in available_versions:
+                if version == torch_version:
+                    continue
+
+                links = fetch_wheel_links(WIN_CPU_URL, version)
+                if links:
+                    wheel = links[0]
+                    print(f'[INFO] Found compatible wheel for torch {version} (fallback from {torch_version})')
+                    break
+
+        # Strategy 3: Try without specific torch version
+        if not wheel:
+            print('[INFO] Trying without specific torch version...')
+            links = fetch_wheel_links(WIN_CPU_URL)
+            wheel = choose_best_wheel(links, require_cuda=False)
+            if links and not wheel:
+                wheel = links[0]  # Pick first available as last resort
 
         if not wheel:
             print('[ERROR] Could not find a suitable Windows CPU wheel for your Python/platform.')
+            print(f'[INFO] Python version: {platform.python_version()} ({py_tag})')
+            if torch_version:
+                print(f'[INFO] Requested torch version: {torch_version}')
+            print('')
+            print('[HINT] k2 may not have wheels for your Python version yet.')
+            print('[HINT] Available options:')
+            print('  1. Try upgrading to Python 3.10, 3.11, or 3.12')
+            print('  2. Build k2 from source: https://k2-fsa.github.io/k2/installation/from_source.html')
             sys.exit(1)
         print(f'[INFO] Selected wheel:\n  {wheel}')
         run_pip_install(wheel, dry_run)
